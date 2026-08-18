@@ -1,0 +1,7 @@
+Debug/
+build/
+.DS_Store
+*.pdf
+*.docx
+.idea/
+.claude/
