@@ -1,5 +1,5 @@
 function(stm32f411_add_firmware TARGET)
-    # diplom_laser.elf -> diplom_laser, для имён .bin/.hex/.map
+    # diplom_laser.elf -> diplom_laser, for .bin/.hex/.map
     get_filename_component(BASE ${TARGET} NAME_WE)
 
     set(MCU_FLAGS -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard)
@@ -63,4 +63,11 @@ function(stm32f411_add_firmware TARGET)
         COMMAND ${CMAKE_OBJCOPY} -O binary ${TARGET} ${BASE}.bin
         COMMAND ${CMAKE_OBJCOPY} -O ihex   ${TARGET} ${BASE}.hex
     )
+
+set(PROTO_DIR ${CMAKE_SOURCE_DIR}/shared/laser_proto)
+
+target_sources(${TARGET} PRIVATE ${PROTO_DIR}/laser_proto.c)
+
+target_include_directories(${TARGET} PRIVATE ${PROTO_DIR})
+
 endfunction()
