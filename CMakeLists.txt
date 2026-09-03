@@ -18,7 +18,7 @@ else()
 
 #----------HOST-----------
 
- message(STATUS "Режим: хостовые тесты")
+ message(STATUS "HOST-TESTS")
 
     enable_language(CXX)
     set(CMAKE_CXX_STANDARD 17)
