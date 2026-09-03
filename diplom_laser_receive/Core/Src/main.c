@@ -58,72 +58,17 @@ static void MX_USART1_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 #include "usbd_cdc_if.h" // Нужно для вывода в терминал ПК
-
-// Перечисления для состояний нашего автомата-парсера
-typedef enum {
-    STATE_SYNC1,
-    STATE_SYNC2,
-    STATE_LENGTH,
-    STATE_DATA,
-    STATE_CHECKSUM
-} RX_State_t;
-
-RX_State_t rx_state = STATE_SYNC1; // Стартуем с ожидания первого байта преамбулы
-
-uint8_t rx_byte = 0;               // Сюда аппаратный UART будет складывать 1 байт
-uint8_t rx_buffer[64];             // Буфер для сборки полезного слова
-uint8_t rx_length = 0;             // Ожидаемая длина слова
-uint8_t rx_index = 0;              // Текущий счетчик принятых букв
-uint8_t rx_calc_checksum = 0;      // Наша расчетная контрольная сумма
-
+#include "laser_proto.h"
 volatile uint8_t packet_ready = 0; // Флаг: "Шеф, мы поймали валидный пакет!"
-
+static parser_t rx_parser;
+uint8_t rx_byte = 0;
 // Эта функция вызывается САМА аппаратно, когда RX пин ловит ровно 8 бит
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
-
-        switch (rx_state) {
-            case STATE_SYNC1:
-                if (rx_byte == 0xAA) rx_state = STATE_SYNC2;
-                break;
-
-            case STATE_SYNC2:
-                if (rx_byte == 0x55) rx_state = STATE_LENGTH;
-                else if (rx_byte != 0xAA) rx_state = STATE_SYNC1; // Если мусор - сброс
-                break;
-
-            case STATE_LENGTH:
-                rx_length = rx_byte;
-                // Защита от переполнения буфера
-                if (rx_length > 0 && rx_length <= 64) {
-                    rx_index = 0;
-                    rx_calc_checksum = rx_length; // Начинаем считать XOR
-                    rx_state = STATE_DATA;
-                } else {
-                    rx_state = STATE_SYNC1; // Пакет битый, сбрасываем
-                }
-                break;
-
-            case STATE_DATA:
-                rx_buffer[rx_index++] = rx_byte; // Сохраняем букву в буфер
-                rx_calc_checksum ^= rx_byte;     // Добавляем к контрольной сумме
-
-                if (rx_index >= rx_length) {
-                    rx_state = STATE_CHECKSUM;   // Все буквы поймали, ждем CRC
-                }
-                break;
-
-            case STATE_CHECKSUM:
-                if (rx_byte == rx_calc_checksum) {
-                    // КОНТРОЛЬНАЯ СУММА СОВПАЛА! Пакет идеален.
-                    packet_ready = 1;
-                }
-                rx_state = STATE_SYNC1; // Возвращаемся в засаду ждать следующий пакет
-                break;
-        }
-
-        // Перезапускаем аппаратный "слухач" на следующий 1 байт
-        HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
+      if (feed_byte(&rx_parser, rx_byte) == PACKET) {
+        packet_ready = 1;
+      }
+      HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
     }
 }
 /* USER CODE END 0 */
@@ -160,6 +105,7 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
+  parser_init(&rx_parser);
   // Включаем аппаратное прослушивание лазера (ждем 1 байт в фоне)
     HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
   /* USER CODE END 2 */
@@ -183,7 +129,7 @@ int main(void)
 	        HAL_Delay(5);
 
 	        // Отправляем в терминал сам пойманный массив букв (тело сообщения)
-	        CDC_Transmit_FS(rx_buffer, rx_length);
+	        CDC_Transmit_FS(rx_parser.buffer, rx_parser.length);
 	        HAL_Delay(5);
 
 	        // Отправляем перенос строки в самом конце

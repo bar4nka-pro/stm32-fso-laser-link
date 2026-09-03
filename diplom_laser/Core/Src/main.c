@@ -58,7 +58,7 @@ static void MX_USART1_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 #include <string.h>
-#include "usbd_cdc_if.h" // Обязательно для функции CDC_Transmit_FS
+#include "laser_proto.h"
 
 // Наш строковый буфер, где будет копиться слово
 uint8_t usb_rx_buffer[64];
@@ -68,29 +68,7 @@ uint16_t usb_rx_len = 0;
 uint8_t raw_usb_byte = 0;            // Сюда складываем пойманный символ
 volatile uint8_t new_byte_flag = 0;  // Флаг апдейта для main
 
-// Функция формирования и отправки защищенного пакета по лазеру
-void Send_Optical_Packet(uint8_t* payload, uint8_t len) {
-    uint8_t header[3];
-    header[0] = 0xAA; // SYNC 1
-    header[1] = 0x55; // SYNC 2
-    header[2] = len;  // Длина полезных данных
 
-    uint8_t checksum = 0;
-
-    // Считаем контрольную сумму всего пакета (XOR длины и всех данных)
-    checksum ^= len;
-    for(int i = 0; i < len; i++) {
-        checksum ^= payload[i];
-    }
-
-    // Аппаратный UART отправляет всё одной сплошной очередью:
-    // 1. Заголовок (3 байта)
-    HAL_UART_Transmit(&huart1, header, 3, HAL_MAX_DELAY);
-    // 2. Полезный текст (массив char)
-    HAL_UART_Transmit(&huart1, payload, len, HAL_MAX_DELAY);
-    // 3. Контрольная сумма (1 байт)
-    HAL_UART_Transmit(&huart1, &checksum, 1, HAL_MAX_DELAY);
-}
 /* USER CODE END 0 */
 
 /**
@@ -144,8 +122,12 @@ int main(void)
 	                // Включаем диод на плате — индикация начала физической передачи
 	                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
-	                // Стреляем массивом данных в лазер!
-	                Send_Optical_Packet(usb_rx_buffer, usb_rx_len);
+	            	uint8_t frame[MAX_FRAME];
+	            	size_t n = build_frame(usb_rx_buffer, (uint8_t)usb_rx_len,
+	            		frame, sizeof(frame));
+	            	if (n > 0) {
+	            		HAL_UART_Transmit(&huart1, frame, (uint16_t)n, HAL_MAX_DELAY);
+	            	}
 
 	                // Выключаем диод — передача окончена
 	                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
