@@ -1,4 +1,5 @@
-
+README IS !NOT! READY
+that just text for other people tbh
 ```
 PC terminal
     │  USB
