@@ -1,5 +1,6 @@
 README IS !NOT! READY
 that just text for other people tbh
+[![CI](https://github.com/bar4nka-pro/stm32-fso-laser-link/actions/workflows/ci.yml/badge.svg)](https://github.com/bar4nka-pro/stm32-fso-laser-link/actions/workflows/ci.yml)
 ```
 PC terminal
     │  USB
