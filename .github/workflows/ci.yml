@@ -35,6 +35,13 @@ jobs:
       - name: building
         run: cmake --build build
 
-      - name: output logs
+      - name: firmware size
         run: arm-none-eabi-size build/diplom_laser/diplom_laser.elf build/diplom_laser_receive/diplom_laser_receive.elf
 
+      - name: upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: 'firmware-bin'
+          path: |
+            build/diplom_laser/diplom_laser.bin
+            build/diplom_laser_receive/diplom_laser_receive.bin
