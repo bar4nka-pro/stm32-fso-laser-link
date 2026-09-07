@@ -1,5 +1,22 @@
-uses: actions/checkout@v4
+name: CI-FSO
 
-cmake -S . -B build-host -G Ninja
-cmake --build build-host
-ctest --test-dir build-host --output-on-failure
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+     - uses: actions/checkout@v4
+
+     - name: configuring
+       run: cmake -S . -B build-host -G Ninja
+
+     - name: building
+       run: cmake --build build-host
+
+     - name: run tests
+       run: ctest --test-dir build-host --output-on-failure
