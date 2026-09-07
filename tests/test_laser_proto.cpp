@@ -42,14 +42,14 @@ TEST(LaserProto, RoundTrip) {
 
 TEST(LaserProto, BuildFrameRejectsBadArgs) {
     uint8_t payload[100];
-    uint8_t out[MAX_FRAME];
+    uint8_t out[200];
 
     std::memset(payload, 0x42, sizeof(payload));
 
     EXPECT_EQ(build_frame(nullptr, 3, out, sizeof(out)), 0u);
     EXPECT_EQ(build_frame(payload, 0, out, sizeof(out)), 0u);
     EXPECT_EQ(build_frame(payload, 3, nullptr, sizeof(out)), 0u);
-    EXPECT_EQ(build_frame(payload, 3, out, sizeof(nullptr)), 0u);
+    EXPECT_EQ(build_frame(payload, 65, out, sizeof(out)), 0u);
     EXPECT_EQ(build_frame(payload, 3, out, 5), 0u );
 }
 
@@ -93,9 +93,66 @@ TEST(LaserProto, TooBigLengthIsRejected) {
 //  sync
 // ─────────────────────────────────────────────────────────────
 
+TEST(LaserProto, GarbageBeforeFrameIsIgnored) {
+    const uint8_t garbage[] = {0x11, 0x22, 0xFF, 0x00};
+    const uint8_t msg[] = {"Hi!"};
+    uint8_t frame[MAX_FRAME];
 
+    size_t n = build_frame(msg, 3, frame, sizeof(frame));
+    ASSERT_EQ(n, 7u);
+
+    parser_t p;
+    parser_init(&p);
+
+    EXPECT_EQ(feed_all(p, garbage, sizeof(garbage)), IDLE);
+    EXPECT_EQ(feed_all(p, frame, n), PACKET);
+    EXPECT_EQ(p.length, 3);
+}
+
+TEST(LaserProto, DoubleSyncByteIsAccepted) {
+    const uint8_t bytes[8] = {0xAA, 0xAA, 0x55, 0x03, 'H', 'i', '!', 0x03};
+
+    parser_t p;
+    parser_init(&p);
+
+    EXPECT_EQ(feed_all(p, bytes, sizeof(bytes)), PACKET);
+    EXPECT_EQ(p.length, 3);
+    EXPECT_EQ(std::memcmp(p.buffer, "Hi!", 3), 0);
+}
+TEST(LaserProto, PayloadMayContainPreamble) {
+    const uint8_t msg[] = { 0x01, 0xAA, 0x55, 0x02 };
+    uint8_t frame[MAX_FRAME];
+
+    size_t n = build_frame(msg, sizeof(msg), frame, sizeof(frame));
+    ASSERT_EQ(n, 8u);
+
+    parser_t p;
+    parser_init(&p);
+
+    EXPECT_EQ(feed_all(p, frame, n), PACKET);
+    EXPECT_EQ(p.length, sizeof(msg));
+    EXPECT_EQ(std::memcmp(p.buffer, msg, sizeof(msg)), 0);
+}
 
 // ─────────────────────────────────────────────────────────────
-//  restore after bad signal
+//  restore after bad frame
 // ─────────────────────────────────────────────────────────────
 
+TEST(LaserProto, RecoverAfterBadFrame) {
+    const uint8_t trunc[] = {0xAA, 0x55, 0x05, 0x01, 0x02};
+    const uint8_t msg[] = {"Hi!"};
+    uint8_t frame[MAX_FRAME];
+    size_t n = build_frame(msg, 3, frame, sizeof(frame));
+    ASSERT_EQ(n, 7u);
+
+    parser_t p;
+    parser_init(&p);
+
+    feed_all(p, trunc, sizeof(trunc));
+    //protocol will NOT accept next frame without last 3 bytes
+    EXPECT_NE(feed_all(p, frame, n), PACKET);
+    //but will when next packet arrive
+    EXPECT_EQ(feed_all(p, frame, n), PACKET);
+    EXPECT_EQ(p.length, 3);
+    EXPECT_EQ(std::memcmp(p.buffer, msg, 3), 0);
+}
