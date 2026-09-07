@@ -1,0 +1,5 @@
+uses: actions/checkout@v4
+
+cmake -S . -B build-host -G Ninja
+cmake --build build-host
+ctest --test-dir build-host --output-on-failure
