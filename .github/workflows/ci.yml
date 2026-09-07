@@ -20,3 +20,21 @@ jobs:
 
      - name: run tests
        run: ctest --test-dir build-host --output-on-failure
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: toolchain setting
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi
+
+      - name: configuring
+        run: cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/cmake/arm-none-eabi.cmake
+
+      - name: building
+        run: cmake --build build
+
+      - name: output logs
+        run: arm-none-eabi-size build/diplom_laser/diplom_laser.elf build/diplom_laser_receive/diplom_laser_receive.elf
+
