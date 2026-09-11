@@ -123,7 +123,7 @@ int main(void)
 
 	        // Сначала выводим красивый маркер начала нового сообщения
 	        uint8_t alert[] = "\r\n>> new message: ";
-	        CDC_Transmit_FS(alert, strlen((char*)alert));
+	        CDC_Transmit_FS(alert, sizeof(alert)-1);
 
 	        // Даем USB контроллеру пару миллисекунд, чтобы протолкнуть заголовок в ПК
 	        HAL_Delay(5);
