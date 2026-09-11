@@ -5,3 +5,4 @@ build/
 *.docx
 .idea/
 build-host/
+*.bin
