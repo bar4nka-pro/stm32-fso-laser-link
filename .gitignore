@@ -6,3 +6,4 @@ build/
 .idea/
 build-host/
 *.bin
+cmake-build-*/
