@@ -7,3 +7,4 @@ build/
 build-host/
 *.bin
 cmake-build-*/
+README.draft.md
