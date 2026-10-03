@@ -61,7 +61,7 @@ static void MX_USART1_UART_Init(void);
 #include "laser_proto.h"
 
 // Наш строковый буфер, где будет копиться слово
-uint8_t usb_rx_buffer[64];
+uint8_t usb_rx_buffer[MAX_PAYLOAD];
 uint16_t usb_rx_len = 0;
 
 // Переменные для связи с прерыванием USB
@@ -158,13 +158,17 @@ int main(void)
 
 	        // Сценарий В: Обычный символ (буква, цифра, пробел)
 	        else {
-	            if (usb_rx_len < 64) {
+	            if (usb_rx_len < sizeof(usb_rx_buffer)) {
 	                usb_rx_buffer[usb_rx_len] = c; // Пишем в массив
 	                usb_rx_len++;
 
 	                // Сразу выводим букву на экран терминала, чтобы видеть, что пишем
 	                CDC_Transmit_FS(&c, 1);
 	            }
+	            else {
+	        		uint8_t bel[] = "\a";
+					CDC_Transmit_FS(bel, sizeof(bel) - 1);
+	        	}
 	        }
 	    }
   }

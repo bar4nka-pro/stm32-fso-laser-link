@@ -134,7 +134,7 @@ int main(void)
 
 	        // Отправляем перенос строки в самом конце
 	        uint8_t newline[] = "\r\n";
-	        CDC_Transmit_FS(newline, 2);
+	        CDC_Transmit_FS(newline, sizeof(newline) - 1);
 
 	        // Выключаем диод и сбрасываем флаг для ожидания следующего пакета в прерывании
 	        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
