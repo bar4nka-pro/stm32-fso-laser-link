@@ -348,4 +348,15 @@ Implemented and verified on hardware:
 
 ## License
 
-![LICENSE](/LICENSE.md)
+Original code in this repository — the protocol layer, firmware application code, tests,
+build system and CI configuration — is released under the [MIT License](LICENSE).
+
+Third-party components are distributed under their own licenses, included in their
+respective directories:
+
+| Component | Location | License |
+|---|---|---|
+| STM32F4 HAL driver | `*/Drivers/STM32F4xx_HAL_Driver` | BSD-3-Clause |
+| CMSIS | `*/Drivers/CMSIS` | Apache-2.0 |
+| STM32 USB Device Library | `*/Middlewares/ST/STM32_USB_Device_Library` | ST SLA0044 |
+
