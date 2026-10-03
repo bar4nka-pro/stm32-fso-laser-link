@@ -63,7 +63,7 @@ handled by the protocol layer described below.
 *Complete link on the bench*
 
 ![Terminal session](docs/images/terminal.jpeg)
-*Transmitter console (left) and decoded output on the receiver (right)*
+*Transmitter console (right) and decoded output on the receiver (left)*
 
 ---
 
