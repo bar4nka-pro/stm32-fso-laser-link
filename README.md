@@ -62,7 +62,7 @@ handled by the protocol layer described below.
 ![Bench setup](docs/images/bench.jpeg)
 *Complete link on the bench*
 
-![Terminal session](docs/images/terminal.jpeg)
+![Terminal session](docs/images/terminal.png)
 *Transmitter console (right) and decoded output on the receiver (left)*
 
 ---
