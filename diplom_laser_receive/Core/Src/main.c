@@ -149,7 +149,7 @@ static uint8_t output_buffer[MAX_PAYLOAD];
 
 	    uint8_t alert[] = "\r\n>> new message: ";
 	    CDC_Transmit_FS(alert, sizeof(alert)-1);
-	    HAL_Delay(3000);
+	    HAL_Delay(5);
 
 	    CDC_Transmit_FS(output_buffer, output_length);
 	    HAL_Delay(5);
