@@ -1,0 +1,1 @@
+stm32f411_add_firmware(transmitter.elf)

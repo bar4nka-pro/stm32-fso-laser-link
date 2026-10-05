@@ -2,7 +2,7 @@
 <project>
 	<fileVersion>3</fileVersion>
 	<configuration>
-		<name>diplom_laser_receive</name>
+		<name>receiver</name>
 		<toolchain>
 			<name>ARM</name>
 		</toolchain>

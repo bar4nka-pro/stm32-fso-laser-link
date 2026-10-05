@@ -2,7 +2,7 @@
 <project>
   <fileVersion>3</fileVersion>
   <configuration>
-    <name>diplom_laser_receive</name>
+    <name>receiver</name>
     <toolchain>
       <name>ARM</name>
     </toolchain>
@@ -16,15 +16,15 @@
         <debug>1</debug>
         <option>
           <name>ExePath</name>
-          <state>diplom_laser_receive/Exe</state>
+          <state>receiver/Exe</state>
         </option>
         <option>
           <name>ObjPath</name>
-          <state>diplom_laser_receive/Obj</state>
+          <state>receiver/Obj</state>
         </option>
         <option>
           <name>ListPath</name>
-          <state>diplom_laser_receive/List</state>
+          <state>receiver/List</state>
         </option>
         <option>
           <name>GEndianMode</name>
@@ -659,7 +659,7 @@
         </option>
         <option>
           <name>OOCOutputFile</name>
-          <state>diplom_laser_receive.hex</state>
+          <state>receiver.hex</state>
         </option>
         <option>
           <name>OOCCommandLineProducer</name>
@@ -702,7 +702,7 @@
         <debug>1</debug>
         <option>
           <name>IlinkOutputFile</name>
-          <state>diplom_laser_receive.out</state>
+          <state>receiver.out</state>
         </option>
         <option>
           <name>IlinkLibIOConfig</name>

@@ -11,8 +11,8 @@ message(STATUS "STM32F411")
 
     include(cmake/stm32f411_firmware.cmake)
 
-    add_subdirectory(diplom_laser)
-    add_subdirectory(diplom_laser_receive)
+    add_subdirectory(transmitter)
+    add_subdirectory(receiver)
 
 else()
 

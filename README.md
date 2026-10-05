@@ -156,8 +156,8 @@ on a host without hardware.
 │   ├── arm-none-eabi.cmake      # cross-compilation toolchain file
 │   └── stm32f411_firmware.cmake # shared firmware target definition
 ├── shared/laser_proto/          # framing layer (C), used by both images and the tests
-├── diplom_laser/                # transmitter: USB CDC console, framing, USART1 TX
-├── diplom_laser_receive/        # receiver: interrupt-driven USART1 RX, decoding, USB CDC
+├── transmitter/                 # transmitter: USB CDC console, framing, USART1 TX
+├── receiver/                    # receiver: interrupt-driven USART1 RX, decoding, USB CDC
 ├── tests/                       # GoogleTest suite for laser_proto
 └── .github/workflows/ci.yml     # CI: host tests and firmware build
 ```
@@ -193,8 +193,8 @@ cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=$PWD/cmake/arm-none-eabi.cma
 cmake --build build
 ```
 
-Outputs: `build/diplom_laser/diplom_laser.{elf,bin,hex}` and
-`build/diplom_laser_receive/diplom_laser_receive.{elf,bin,hex}`.
+Outputs: `build/transmitter/transmitter.{elf,bin,hex}` and
+`build/receiver/receiver.{elf,bin,hex}`.
 
 The toolchain file is evaluated before `project()` and must be supplied when configuring
 an empty build directory.
@@ -206,7 +206,7 @@ an empty build directory.
 **st-flash**
 
 ```sh
-st-flash --connect-under-reset --reset write build/diplom_laser/diplom_laser.bin 0x08000000
+st-flash --connect-under-reset --reset write build/transmitter/transmitter.bin 0x08000000
 ```
 
 **OpenOCD**
@@ -216,7 +216,7 @@ openocd -f interface/stlink-dap.cfg \
         -c "transport select dapdirect_swd" \
         -f target/stm32f4x.cfg \
         -c "reset_config none separate" \
-        -c "program build/diplom_laser/diplom_laser.elf verify reset exit"
+        -c "program build/transmitter/transmitter.elf verify reset exit"
 ```
 
 NRST is not wired on these boards, so `reset_config none separate` makes OpenOCD reset

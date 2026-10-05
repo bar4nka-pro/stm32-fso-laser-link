@@ -1,5 +1,5 @@
 function(stm32f411_add_firmware TARGET)
-    # diplom_laser.elf -> diplom_laser, for .bin/.hex/.map
+    # transmitter.elf -> transmitter, for .bin/.hex/.map
     get_filename_component(BASE ${TARGET} NAME_WE)
 
     set(MCU_FLAGS -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard)

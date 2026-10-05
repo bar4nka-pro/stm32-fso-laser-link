@@ -1,1 +1,0 @@
-stm32f411_add_firmware(diplom_laser.elf)
