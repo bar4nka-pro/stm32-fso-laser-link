@@ -57,7 +57,7 @@ handled by the protocol layer described below.
 | Transmitter | Receiver |
 |---|---|
 | ![Transmitter](docs/images/transmitter.jpeg) | ![Receiver](docs/images/receiver.jpeg) |
-| STM32F411 and laser driver | Photodiode and Schmitt trigger |
+| STM32F411 and laser driver | Photodiode and load resistor |
 
 ![Bench setup](docs/images/bench.jpeg)
 *Complete link on the bench*
@@ -78,24 +78,33 @@ handled by the protocol layer described below.
 | Receive pin | PA10 (USART1_RX) ← photodiode front-end |
 | Activity LED | PC13, active low, lit while a frame is being processed |
 | Host interface | USB 2.0 full-speed, CDC ACM (virtual COM port) |
-| Emitter | 650 nm laser diode |
-| Detector | Photodiode with Schmitt-trigger output stage |
+| Emitter | SYD1230 laser module — 650 nm, 5 mW class, 3–5 V supply |
+| Detector | FD-7K (ФД-7К) silicon photodiode, reverse-biased, 15.5 kΩ load resistor, read directly by PA10 |
 | Debug | SWD (SWDIO, SWCLK, GND, 3V3); NRST not connected |
 
 **Clocking.** The 25 MHz HSE crystal drives the PLL, whose Q output supplies the 48 MHz
-USB clock. SYSCLK is currently taken from the 16 MHz HSI — see
-[Known limitations](#known-limitations).
+USB clock. SYSCLK, and with it both APB buses, is currently taken from the 16 MHz HSI —
+see [Known limitations](#known-limitations).
+
+**Receiver front-end.** There is no external comparator or amplifier. The voltage across
+the photodiode load resistor drives PA10 directly, and the pin's built-in input Schmitt
+trigger acts as the slicer. Per the STM32F411 datasheet (Table 53, FT I/O), at
+VDD = 3.3 V the input is guaranteed to read low below 0.3 VDD ≈ 1.0 V and high above
+0.7 VDD ≈ 2.3 V, with a typical hysteresis of 10 % VDD (at least 200 mV). The
+photodiode signal must therefore cross this whole band within one bit time; the load
+resistor value trades sensitivity against the RC time constant of the front-end.
 
 ### Resource usage
 
-Debug build (`-O0 -g3`), Arm GNU Toolchain 15.3.Rel1:
+Debug build (`-O0 -g3`), `arm-none-eabi-gcc` 16.2.0:
 
 | Image | Flash (text + data) | RAM (data + bss) |
 |---|---|---|
-| Transmitter | 31 124 B — 5.9 % | 9 104 B — 6.9 % |
-| Receiver | 33 116 B — 6.3 % | 9 112 B — 7.0 % |
+| Transmitter | 30 884 B — 5.9 % | 9 104 B — 6.9 % |
+| Receiver | 33 112 B — 6.3 % | 9 704 B — 7.4 % |
 
-Exact figures vary slightly between toolchain and newlib versions.
+Exact figures vary by a few hundred bytes between toolchain and newlib versions; RAM use
+on the receiver includes the 8-slot message queue (520 B).
 
 ---
 
@@ -157,7 +166,7 @@ on a host without hardware.
 │   └── stm32f411_firmware.cmake # shared firmware target definition
 ├── shared/laser_proto/          # framing layer (C), used by both images and the tests
 ├── transmitter/                 # transmitter: USB CDC console, framing, USART1 TX
-├── receiver/                    # receiver: interrupt-driven USART1 RX, decoding, USB CDC
+├── receiver/                    # receiver: interrupt-driven USART1 RX, decoding, message queue, USB CDC
 ├── tests/                       # GoogleTest suite for laser_proto
 └── .github/workflows/ci.yml     # CI: host tests and firmware build
 ```
@@ -227,6 +236,22 @@ Without `program … exit`, OpenOCD remains running and serves GDB on port 3333 
 command console on port 4444, which can be used to inspect peripheral registers on a
 running target.
 
+**USB DFU (no debug probe)**
+
+The STM32F411 system bootloader exposes a DFU device (`0483:df11`) when the chip starts
+with BOOT0 high: hold BOOT0, press and release NRST, release BOOT0.
+
+```sh
+dfu-util -l                                                   # list DFU devices
+dfu-util -S <serial> -a 0 -s 0x08000000:leave -D build/receiver/receiver.bin
+```
+
+`-S` selects the board by its USB serial number when both are in DFU mode at once;
+`:leave` starts the application after programming. Entry into DFU is not always
+successful on the first attempt on these boards — if the host reports enumeration
+errors, repeat the BOOT0/NRST sequence. DFU only programs flash; debugging still
+requires SWD.
+
 ---
 
 ## Usage
@@ -245,6 +270,23 @@ On the **transmitter** console, input is line-edited:
 | any character beyond 64 | rejected; the console emits BEL (`0x07`) |
 
 The **receiver** prints each verified frame as `>> new message: <payload>`.
+
+### Receiver data path
+
+```
+USART1 RX interrupt ──► decoder ──► message queue (8 slots) ──► main loop ──► USB CDC
+     one byte per IRQ    laser_proto    head: written by the ISR      tail: written by main
+```
+
+The decoder runs in the USART interrupt, one byte per call. Each verified payload is
+copied into a single-producer, single-consumer ring of eight message slots. The main loop
+copies the oldest slot into its own buffer, releases the slot and only then writes it to
+USB, so the interrupt never modifies data that is being printed. Each index is written by
+exactly one side, so no interrupt masking is required.
+
+One slot is always kept free to distinguish a full queue from an empty one, giving a
+capacity of seven pending messages. When the queue is full, the new message is dropped
+and counted in `lost_counter`.
 
 ---
 
@@ -280,10 +322,60 @@ corruption that the link did not cause.
 | Run | Frames | Payload bytes | Checksum failures |
 |---|---|---|---|
 | September 2026, 1200 baud | 15 / 15 | 240 | 0 |
+| October 2026, 1200 baud, with receiver message queue | 15 / 15 | 240 | 0 |
 
-The run includes payloads containing preamble bytes and a full 64-byte payload. Test
+Each run includes payloads containing preamble bytes and a full 64-byte payload. Test
 payloads exclude `0x08`, `0x0A`, `0x0D` and `0x7F`, which the transmitter console
 interprets as editing commands rather than data.
+
+A 68-byte frame takes 567 ms on the wire at 1200 baud (10 bits per byte), so the
+harness must wait at least that long after the line terminator before reading the result.
+
+### Link speed
+
+Both firmware images were rebuilt and run at 2400 and 9600 baud, with the configured rate
+confirmed on hardware: the transmitter sends each frame with a blocking call, so the
+interval between the line terminator and the `>> message sent` reply equals the frame
+duration, `(LEN + 4) × 10 / baud`.
+
+| Path | 1200 baud | 2400 baud | 9600 baud |
+|---|---|---|---|
+| Direct wire, PA9 → PA10 | — | — | full test set passed |
+| Optical: laser → free space → photodiode → PA10 | full test set passed | no frame received | no frame received |
+
+With the wire in place of the optical path, the complete boundary-case set passes at
+9600 baud: payloads containing `0x00`, `0xFF` and preamble bytes, exactly 64 bytes,
+65-byte input truncated to 64, 15 random 16-byte frames and 15 random 64-byte frames.
+Over the optical path at 2400 and 9600 baud not a single frame is decoded, including
+a 5-byte payload. The firmware, protocol and receiver queue are therefore not the
+limiting factor at these rates; the optical path is, and its usable rate lies between
+1200 and 2400 baud.
+
+The limitation is attributed to the transmitter side — the SYD1230 laser module and its
+drive. The photodiode front-end was dimensioned with roughly fourfold margin on its
+bandwidth constraint (15.5 kΩ load against a 55–63 kΩ upper limit), and pulse smearing
+on the laser side was observed on the oscilloscope during the original bench work, which
+is why 1200 baud was chosen. An edge-level measurement that isolates the emitter (for
+example, the same PA9 signal driving an LED of known speed onto the same photodiode) has
+not been performed yet.
+
+![Oscilloscope capture of a Hello world! frame](docs/images/scope_hello_world.png)
+*Transmission of `Hello world!` over the optical path at 1200 baud: CH2 (blue) — laser drive
+signal from PA9, CH1 (yellow) — photodiode signal at the receiver*
+
+### Receiver queue verification
+
+The receiver's output path was slowed artificially (3 s per message) to force messages
+to arrive while the previous one was still being printed:
+
+| Scenario | Expected | Observed |
+|---|---|---|
+| 3 messages within one output window | all delivered, in order | all delivered, in order; `lost_counter = 0` |
+| 12 messages within 2 s | first delivered at once, 7 queued, 4 dropped | messages 1–8 delivered in order; `lost_counter = 4` |
+
+Before the queue was introduced, the same test printed the second message's payload
+under the first message's header: the first message was overwritten and the second never
+got its own line, with no indication of either loss. Counters were read from the running target over SWD.
 
 ---
 
@@ -310,8 +402,8 @@ Implemented and verified on hardware:
   CI.
 - Transmitter: USB CDC line console with echo, editing, input-length enforcement and
   framed transmission.
-- Receiver: interrupt-driven reception, incremental decoding, output of verified frames
-  to the host.
+- Receiver: interrupt-driven reception, incremental decoding, an 8-slot message queue
+  between the interrupt and the main loop, output of verified frames to the host.
 - End-to-end link operation at 1200 baud.
 
 ---
@@ -320,29 +412,39 @@ Implemented and verified on hardware:
 
 | Area | Description |
 |---|---|
-| USB input | The CDC receive callback forwards only the first byte of each USB packet; additional bytes in the same packet are dropped. Fast or pasted input is therefore incomplete. |
+| USB input | The CDC receive callback forwards only the first byte of each USB packet, through a single shared byte; additional bytes in the same packet, or bytes arriving before the main loop reads the previous one, are dropped. Pasted input is therefore incomplete. |
 | Shared state | The byte handed from the USB callback to the main loop is not declared `volatile`. |
-| Receiver concurrency | Frames are decoded in the USART interrupt, and the frame-ready flag is cleared after output completes, so a frame completed during output is lost. |
-| Receiver error recovery | No `HAL_UART_ErrorCallback` is provided. After a USART overrun the HAL aborts reception and nothing restarts it; the receiver stays silent until reset. Identified by code review, not yet reproduced. |
-| Error reporting | Frames rejected with `BAD_CRC` or `BAD_LEN` are discarded without being counted. |
+| Blocking transmission | The transmitter sends each frame with a blocking `HAL_UART_Transmit` — up to 567 ms at 1200 baud — during which USB input is not consumed, which aggravates the input loss above. |
+| Receiver error recovery | No `HAL_UART_ErrorCallback` is provided. After a USART overrun the HAL aborts reception and nothing restarts it; the receiver stays silent until reset. Identified by code review, not yet reproduced. Framing and noise errors do not stop reception, but are not counted. |
+| Error reporting | Frames rejected with `BAD_CRC` or `BAD_LEN` are discarded without being counted. Messages dropped on a full receiver queue are counted in `lost_counter`, but the counter is not yet reported to the host. |
+| Frame timeout | The decoder has no inter-byte timeout: after a truncated frame it keeps collecting payload bytes, so the next frame is consumed as the remainder of the broken one (see `RecoverAfterBadFrame`). |
+| Link speed | The optical path does not operate above 1200 baud: at 2400 and 9600 baud no frame is received, while the same firmware passes all tests at 9600 baud over a direct wire. The limitation is attributed to the laser module; see [Link speed](#link-speed). |
 | Integrity check | A single-byte XOR detects all single-bit errors but misses an even number of errors in the same bit position. |
-| Clocking | SYSCLK runs from HSI at 16 MHz rather than from the PLL. |
-| Output pacing | Consecutive USB writes are separated by fixed `HAL_Delay()` calls instead of waiting for transfer completion. |
+| Clocking | SYSCLK runs from HSI at 16 MHz rather than from the PLL. The PLL is configured with its P output at 120 MHz, above the STM32F411 limit of 100 MHz; it is harmless while unused as SYSCLK, but must be reconfigured before switching. |
+| USB output | The return value of `CDC_Transmit_FS` is not checked. Consecutive writes are separated by fixed `HAL_Delay()` calls; a write issued while the previous transfer is still in progress returns `USBD_BUSY` and its data is lost silently. |
 
 ---
 
 ## Roadmap
 
-1. Ring-buffered USB reception that consumes every byte of each packet.
-2. Frame decoding moved from interrupt context to the main loop.
-3. USART error recovery and rejected-frame counters as a basis for link-quality
-   (error-rate) measurement.
-4. CRC-8 (table-driven) in place of the XOR checksum, with standard check values in the
-   test suite.
-5. Segmentation for messages longer than one frame: sequence numbers, an end-of-message
-   flag, acknowledgement and retransmission — a prerequisite for file transfer.
+1. Optical path above 1200 baud: edge-level measurement of the laser module response,
+   then a faster emitter or a dedicated laser drive stage. Ring-buffered USB reception on
+   the transmitter that consumes every byte of each packet.
+2. USART error recovery (`HAL_UART_ErrorCallback`) with overrun, framing and noise error
+   counters.
+3. Link-quality counters — rejected frames, dropped messages, USART errors — reported to
+   the host as a basis for error-rate measurement.
+4. USB output that waits for the previous transfer instead of fixed delays.
+5. Inter-byte timeout in the decoder, so a truncated frame does not consume the next one.
 6. The link test harness committed as `tools/link_test.py`.
-7. Host tests on both Linux and macOS runners in CI.
+7. CRC-8 (table-driven) in place of the XOR checksum, with standard check values in the
+   test suite.
+8. SYSCLK from the PLL at 96 MHz (M = 25, N = 192, P = 2, Q = 4; 3 flash wait states;
+   APB1 at 48 MHz). APB2 must also be divided: at 96 MHz the USART1 baud-rate divisor for
+   1200 baud (5000) exceeds the 12-bit mantissa of `BRR`.
+9. Segmentation for messages longer than one frame: sequence numbers, an end-of-message
+   flag, acknowledgement and retransmission — a prerequisite for file transfer.
+10. Host tests on both Linux and macOS runners in CI.
 
 ---
 
