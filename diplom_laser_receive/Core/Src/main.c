@@ -19,20 +19,23 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_device.h"
-
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "laser_proto.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef struct
+{
+  uint8_t buffer[MAX_PAYLOAD];
+  uint8_t length;
+} packet_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define QUEUE_SIZE 8
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -57,20 +60,37 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#include "usbd_cdc_if.h" // Нужно для вывода в терминал ПК
-#include "laser_proto.h"
-volatile uint8_t packet_ready = 0; // Флаг: "Шеф, мы поймали валидный пакет!"
+#include "usbd_cdc_if.h"
+
+volatile packet_t queue[QUEUE_SIZE];
+volatile uint8_t head = 0;
+volatile uint8_t tail = 0;
+volatile uint32_t lost_counter = 0;
+
 static parser_t rx_parser;
 uint8_t rx_byte = 0;
-// Эта функция вызывается САМА аппаратно, когда RX пин ловит ровно 8 бит
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-    if (huart->Instance == USART1) {
+    if (huart->Instance == USART1)
+    {
       if (feed_byte(&rx_parser, rx_byte) == PACKET) {
-        packet_ready = 1;
-      }
+          uint8_t next = (head + 1) & (QUEUE_SIZE - 1);
+          if (next == tail) {
+          lost_counter++;
+          }
+          else {
+            for (uint8_t i = 0; i < rx_parser.length; i++)
+            {
+              queue[head].buffer[i] = rx_parser.buffer[i];
+            }
+            queue[head].length = rx_parser.length;
+            head = next;
+          }
+        }
       HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
+      }
     }
-}
+
 /* USER CODE END 0 */
 
 /**
@@ -81,7 +101,8 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+static uint8_t output_buffer[MAX_PAYLOAD];
+  static uint8_t output_length = 0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -117,28 +138,25 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  if (packet_ready == 1) {
-	        // Включаем синий диод (показываем, что пакет успешно прошел проверку CRC)
-	        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+	  if (head != tail) {
+	    for (uint8_t i = 0; i < queue[tail].length; i++)
+	    {
+	      output_buffer[i] = queue[tail].buffer[i];
+	    }
+	    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+	    output_length = queue[tail].length;
+	    tail = (tail + 1) & (QUEUE_SIZE - 1);
 
-	        // Сначала выводим красивый маркер начала нового сообщения
-	        uint8_t alert[] = "\r\n>> new message: ";
-	        CDC_Transmit_FS(alert, sizeof(alert)-1);
+	    uint8_t alert[] = "\r\n>> new message: ";
+	    CDC_Transmit_FS(alert, sizeof(alert)-1);
+	    HAL_Delay(3000);
 
-	        // Даем USB контроллеру пару миллисекунд, чтобы протолкнуть заголовок в ПК
-	        HAL_Delay(5);
+	    CDC_Transmit_FS(output_buffer, output_length);
+	    HAL_Delay(5);
 
-	        // Отправляем в терминал сам пойманный массив букв (тело сообщения)
-	        CDC_Transmit_FS(rx_parser.buffer, rx_parser.length);
-	        HAL_Delay(5);
-
-	        // Отправляем перенос строки в самом конце
-	        uint8_t newline[] = "\r\n";
-	        CDC_Transmit_FS(newline, sizeof(newline) - 1);
-
-	        // Выключаем диод и сбрасываем флаг для ожидания следующего пакета в прерывании
-	        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
-	        packet_ready = 0;
+	    uint8_t newline[] = "\r\n";
+	    CDC_Transmit_FS(newline, sizeof(newline) - 1);
+	    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
 	    }
   /* USER CODE END 3 */
 }
