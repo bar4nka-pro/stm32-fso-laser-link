@@ -22,3 +22,16 @@ target_link_libraries(laser_proto_tests PRIVATE GTest::gtest_main)
 # registering CTest
 include(GoogleTest)
 gtest_discover_tests(laser_proto_tests)
+
+add_executable(ring_buffer_tests
+    test_ring_buffer.cpp
+    ${CMAKE_SOURCE_DIR}/shared/ring_buffer/ring_buffer.c
+)
+
+target_include_directories(ring_buffer_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/shared/ring_buffer
+)
+
+target_link_libraries(ring_buffer_tests PRIVATE GTest::gtest_main)
+
+gtest_discover_tests(ring_buffer_tests)

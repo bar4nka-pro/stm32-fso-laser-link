@@ -70,4 +70,10 @@ target_sources(${TARGET} PRIVATE ${PROTO_DIR}/laser_proto.c)
 
 target_include_directories(${TARGET} PRIVATE ${PROTO_DIR})
 
+set(RING_BUFFER_DIR ${CMAKE_SOURCE_DIR}/shared/ring_buffer)
+
+target_sources(${TARGET} PRIVATE ${RING_BUFFER_DIR}/ring_buffer.c)
+
+target_include_directories(${TARGET} PRIVATE ${RING_BUFFER_DIR})
+
 endfunction()
