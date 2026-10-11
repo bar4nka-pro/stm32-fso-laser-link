@@ -60,7 +60,7 @@ static void MX_USART1_UART_Init(void);
 #include <string.h>
 #include "laser_proto.h"
 
-// buffer
+// drain all bytes received from USB (filled by CDC_Receive_FS in ISR context)
 uint8_t usb_rx_buffer[MAX_PAYLOAD];
 uint16_t usb_rx_len = 0;
 
@@ -116,7 +116,7 @@ int main(void)
 	        // Сценарий А: Нажат Enter (обычно терминалы шлют '\r')
 	        if (c == '\r' || c == '\n') {
 	            if (usb_rx_len > 0) {
-	                // Включаем диод на плате — индикация начала физической передачи
+	                // Включаем диод на плате - индикация начала физической передачи
 	                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
 	            	uint8_t frame[MAX_FRAME];
