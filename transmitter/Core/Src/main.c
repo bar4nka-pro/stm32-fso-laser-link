@@ -60,13 +60,11 @@ static void MX_USART1_UART_Init(void);
 #include <string.h>
 #include "laser_proto.h"
 
-// Наш строковый буфер, где будет копиться слово
+// buffer
 uint8_t usb_rx_buffer[MAX_PAYLOAD];
 uint16_t usb_rx_len = 0;
 
-// Переменные для связи с прерыванием USB
-uint8_t raw_usb_byte = 0;            // Сюда складываем пойманный символ
-volatile uint8_t new_byte_flag = 0;  // Флаг апдейта для main
+
 
 
 /* USER CODE END 0 */
@@ -95,7 +93,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+	ring_buffer_init(&usb_rx_rb);
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -112,9 +110,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  if (new_byte_flag == 1) {
-	        new_byte_flag = 0; // Сбрасываем флаг прерывания
-	        uint8_t c = raw_usb_byte;
+  	uint8_t c;
+  	while (ring_buffer_consumer(&usb_rx_rb, &c)) {
 
 	        // Сценарий А: Нажат Enter (обычно терминалы шлют '\r')
 	        if (c == '\r' || c == '\n') {
