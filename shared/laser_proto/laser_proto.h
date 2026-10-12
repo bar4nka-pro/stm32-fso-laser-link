@@ -4,8 +4,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* format : SYNC1 SYNC2 LEN DATA[LEN] CHECKSUM
-   CHECKSUM = LEN XOR-(of all bytes) DATA                */
+/*   SYNC1 SYNC2 LEN DATA[LEN] CHECKSUM
+   CHECKSUM = LEN XOR DATA   */
 
 #define SYNC1        0xAAu
 #define SYNC2        0x55u
@@ -13,14 +13,14 @@
 #define OVERHEAD     4u   /* SYNC1 + SYNC2 + LEN + CHECKSUM */
 #define MAX_FRAME    (MAX_PAYLOAD + OVERHEAD)
 
-/* --- assembly --- */
+//      ASSEMBLY
 
 /* assembling complete shot out.
    returns the frame lenght in bytes, OR 0 IF argum are invalid. */
 size_t build_frame(const uint8_t *payload, uint8_t len,
                          uint8_t *out, size_t out_cap);
 
-/* --- disassembly --- */
+//      DISASSEMBLY
 
 typedef enum {
     IDLE,      /* byte received / frame not complete */
@@ -37,12 +37,15 @@ typedef enum {
     ST_CHECKSUM
 } ST_t;
 
+#define INTERBYTE_TIMEOUT_MS 20u   //   2 byte times at 1200 baud 8.3 ms each
+
 typedef struct {
-    ST_t state;
-    uint8_t buffer[MAX_PAYLOAD];
-    uint8_t length;
-    uint8_t index;
-    uint8_t checksum;
+    ST_t     state;
+    uint8_t  buffer[MAX_PAYLOAD];
+    uint8_t  length;
+    uint8_t  index;
+    uint8_t  checksum;
+    uint32_t last_byte_ms;
 } parser_t;
 
 void parser_init(parser_t *p);
@@ -50,6 +53,9 @@ void parser_init(parser_t *p);
 /* feeds to parser 1 byte, when PACKET —
    returns p->buffer stored in payload, length p->length.
    reading till next call */
-result_t feed_byte(parser_t *p, uint8_t byte);
+
+result_t feed_byte(parser_t *p, uint8_t byte, uint32_t now_ms);
+
+
 
 #endif

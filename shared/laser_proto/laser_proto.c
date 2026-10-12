@@ -31,10 +31,18 @@ void  parser_init(parser_t *p) {
     p->length   = 0;
     p->index    = 0;
     p->checksum = 0;
+    p->last_byte_ms = 0;
 }
 
-result_t feed_byte(parser_t *p, uint8_t byte)
+result_t feed_byte(parser_t *p, uint8_t byte, uint32_t now_ms)
 {
+    // TIMEOUT AFTER BYTE
+    if (p->state != ST_SYNC1 && (uint32_t)(now_ms - p->last_byte_ms) > INTERBYTE_TIMEOUT_MS)
+    {
+        p->state = ST_SYNC1;
+    }
+    p->last_byte_ms = now_ms;
+
     switch (p->state) {
 
         case ST_SYNC1:

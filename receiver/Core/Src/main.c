@@ -98,7 +98,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1)
     {
       count_uart_errors(huart->ErrorCode);
-      if (feed_byte(&rx_parser, rx_byte) == PACKET) {
+      if (feed_byte(&rx_parser, rx_byte, HAL_GetTick()) == PACKET) {
           uint8_t next = (head + 1) & (QUEUE_SIZE - 1);
           if (next == tail) {
           lost_counter++;
