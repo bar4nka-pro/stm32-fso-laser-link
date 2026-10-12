@@ -70,9 +70,34 @@ volatile uint32_t lost_counter = 0;
 static parser_t rx_parser;
 uint8_t rx_byte = 0;
 
+volatile uint32_t fe_counter = 0;
+volatile uint32_t ne_counter = 0;
+volatile uint32_t ore_counter = 0;
+
+//UART ERRORS COUNTER
+
+static void count_uart_errors(uint32_t err)
+{
+  if (err & HAL_UART_ERROR_FE)
+  {
+    fe_counter++;
+  }
+  if (err & HAL_UART_ERROR_NE)
+  {
+    ne_counter++;
+  }
+  if (err & HAL_UART_ERROR_ORE)
+  {
+    ore_counter++;
+  }
+}
+
+//UART INTERRUPT HANDLE
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1)
     {
+      count_uart_errors(huart->ErrorCode);
       if (feed_byte(&rx_parser, rx_byte) == PACKET) {
           uint8_t next = (head + 1) & (QUEUE_SIZE - 1);
           if (next == tail) {
@@ -91,6 +116,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
       }
     }
 
+//UART ERROR INTERRUPT HANDLE
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == USART1)
+  {
+    count_uart_errors(huart->ErrorCode);
+    (void)HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -153,7 +187,7 @@ static uint8_t output_buffer[MAX_PAYLOAD];
 
 	    CDC_Transmit_FS(output_buffer, output_length);
 	    HAL_Delay(5);
-
+	    
 	    uint8_t newline[] = "\r\n";
 	    CDC_Transmit_FS(newline, sizeof(newline) - 1);
 	    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
