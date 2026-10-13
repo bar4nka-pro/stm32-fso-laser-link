@@ -8,8 +8,9 @@ open air by a modulated 650 nm laser, received by a photodiode front-end, verifi
 delivered to a second host.
 
 The repository contains the framing protocol, the transmitter and receiver firmware,
-a host-side unit test suite and the CI pipeline. The optical hardware originates from
-a bachelor's thesis on asynchronous data transfer over a free-space optical channel.
+a host-side unit test suite checked by mutation testing, and the CI pipeline. The optical
+hardware originates from a bachelor's thesis on asynchronous data transfer over a
+free-space optical channel.
 
 ---
 
@@ -100,11 +101,12 @@ Debug build (`-O0 -g3`), `arm-none-eabi-gcc` 16.2.0:
 
 | Image | Flash (text + data) | RAM (data + bss) |
 |---|---|---|
-| Transmitter | 30 884 B — 5.9 % | 9 104 B — 6.9 % |
-| Receiver | 33 112 B — 6.3 % | 9 704 B — 7.4 % |
+| Transmitter | 31 104 B — 5.9 % | 9 368 B — 7.1 % |
+| Receiver | 33 308 B — 6.4 % | 9 720 B — 7.4 % |
 
 Exact figures vary by a few hundred bytes between toolchain and newlib versions; RAM use
-on the receiver includes the 8-slot message queue (520 B).
+on the transmitter includes the 256-byte USB input ring buffer, on the receiver the 8-slot
+message queue (520 B).
 
 ---
 
@@ -142,7 +144,9 @@ physical link: payloads such as `41 00 42`, `58 AA 55 59` and `FF FF FF` are del
 unaltered.
 
 **Length is covered by the checksum.** The checksum is seeded with `LEN`, so a corrupted
-length field causes a checksum failure rather than a frame of the wrong size.
+length field causes a checksum failure rather than a frame of the wrong size. The decoder
+still has to collect `LEN` bytes before it can detect the failure; see
+[Known limitations](#known-limitations).
 
 **Resynchronisation.** The decoder is a five-state machine
 (`SYNC1 → SYNC2 → LENGTH → DATA → CHECKSUM`) that returns to the search state after every
@@ -150,9 +154,18 @@ frame, accepted or rejected. Leading noise is discarded, and a repeated preamble
 handled correctly: in `AA AA 55`, the second `0xAA` holds the decoder in the `SYNC2`
 state, so the sequence still opens a frame.
 
-**Sans-I/O.** The decoder performs no peripheral access. It consumes one byte per call
-and returns a result — `IDLE`, `PACKET`, `BAD_CRC` or `BAD_LEN` — which makes it testable
-on a host without hardware.
+**Inter-byte timeout.** If more than `INTERBYTE_TIMEOUT_MS` (20 ms, about two byte times
+at 1200 baud) passes between two bytes of a frame, the partial frame is discarded and the
+decoder returns to the search state before processing the new byte. A frame truncated by
+a beam interruption therefore no longer consumes the beginning of the next one. The
+elapsed time is computed as `(uint32_t)(now_ms - last_byte_ms)`, which stays correct when
+the 32-bit millisecond tick wraps around after about 49.7 days.
+
+**Sans-I/O.** The decoder performs no peripheral access. It consumes one byte per call,
+together with the current time in milliseconds supplied by the caller (`HAL_GetTick()` on
+the target, an arbitrary value in tests), and returns a result — `IDLE`, `PACKET`,
+`BAD_CRC` or `BAD_LEN`. This makes it testable on a host without hardware, including the
+timing behaviour.
 
 ---
 
@@ -164,10 +177,12 @@ on a host without hardware.
 ├── cmake/
 │   ├── arm-none-eabi.cmake      # cross-compilation toolchain file
 │   └── stm32f411_firmware.cmake # shared firmware target definition
-├── shared/laser_proto/          # framing layer (C), used by both images and the tests
-├── transmitter/                 # transmitter: USB CDC console, framing, USART1 TX
-├── receiver/                    # receiver: interrupt-driven USART1 RX, decoding, message queue, USB CDC
-├── tests/                       # GoogleTest suite for laser_proto
+├── shared/
+│   ├── laser_proto/             # framing layer (C), used by both images and the tests
+│   └── ring_buffer/             # SPSC byte ring buffer (C), used by the transmitter and the tests
+├── transmitter/                 # transmitter: USB CDC console, input ring buffer, framing, USART1 TX
+├── receiver/                    # receiver: interrupt-driven USART1 RX, decoding, message queue, error counters, USB CDC
+├── tests/                       # GoogleTest suites for laser_proto and ring_buffer
 └── .github/workflows/ci.yml     # CI: host tests and firmware build
 ```
 
@@ -269,7 +284,27 @@ On the **transmitter** console, input is line-edited:
 | Enter (CR or LF) | sends the line as one frame; the console replies `>> message sent` |
 | any character beyond 64 | rejected; the console emits BEL (`0x07`) |
 
+Input may be typed or pasted: several lines sent in one USB transfer are framed and
+transmitted one after another.
+
 The **receiver** prints each verified frame as `>> new message: <payload>`.
+
+### Transmitter data path
+
+```
+USB OUT packet ──► CDC_Receive_FS ──► ring buffer (256 B) ──► main loop ──► line editor ──► framing ──► USART1 TX
+                   every byte          head: written by USB IRQ   tail: written by main
+```
+
+The USB receive callback runs in interrupt context and pushes every byte of each packet
+into a single-producer, single-consumer ring buffer (`shared/ring_buffer/`). The main loop
+drains the buffer byte by byte into the line editor and transmits a frame on each line
+terminator. One slot is kept free, so the buffer holds up to 255 pending bytes; a byte
+arriving on a full buffer is dropped and counted in `usb_rx_rb.lost`.
+
+Frames are sent with a blocking `HAL_UART_Transmit` (up to 567 ms for a 68-byte frame at
+1200 baud). USB input that arrives meanwhile accumulates in the ring buffer instead of
+being lost, as long as it fits.
 
 ### Receiver data path
 
@@ -288,14 +323,31 @@ One slot is always kept free to distinguish a full queue from an empty one, givi
 capacity of seven pending messages. When the queue is full, the new message is dropped
 and counted in `lost_counter`.
 
+### Receiver error counters
+
+USART1 framing, noise and overrun errors are counted in `fe_counter`, `ne_counter` and
+`ore_counter`. The counters are not yet reported to the host; they are read from the
+running target over SWD (for example, `mdw` in the OpenOCD console, with addresses taken
+from `arm-none-eabi-nm`).
+
+Errors are counted at the start of `HAL_UART_RxCpltCallback`, not only in
+`HAL_UART_ErrorCallback`. When an error flag is raised together with a received byte, the
+HAL first delivers the byte; re-arming reception from the receive callback clears
+`huart->ErrorCode`, so when the IRQ handler checks it afterwards the error code is already
+zero and the error callback is not invoked. A counter placed only in the error callback was verified on hardware to stay at
+zero while overruns were occurring. The error callback is kept as well: it counts the
+remaining cases and restarts reception if the HAL has stopped it.
+
 ---
 
 ## Testing
 
 ### Unit tests
 
-Nine GoogleTest cases (GoogleTest 1.15.2, fetched at configure time, registered with
-CTest) cover the framing layer:
+Twenty GoogleTest cases in two executables (GoogleTest 1.15.2, fetched at configure time,
+registered with CTest) cover the shared modules.
+
+**Framing layer** — `laser_proto_tests`, 14 cases:
 
 | Test | Verifies |
 |---|---|
@@ -308,9 +360,45 @@ CTest) cover the framing layer:
 | `DoubleSyncByteIsAccepted` | `AA AA 55` opens a frame |
 | `PayloadMayContainPreamble` | payload bytes equal to the preamble are transparent |
 | `RecoverAfterBadFrame` | the decoder resynchronises after a rejected frame |
+| `NormalInterByteGapKeepsFrame` | a frame with byte-time gaps (8 ms) is accepted |
+| `StalePartialFrameIsDroppedAfterTimeout` | a partial frame followed by a gap above the timeout is discarded, and the next frame is accepted |
+| `GapExactlyAtTimeoutKeepsFrame` | a gap of exactly `INTERBYTE_TIMEOUT_MS` does not discard the frame (boundary) |
+| `NormalGapAcrossTickWraparoundKeepsFrame` | a frame spanning the 32-bit tick wraparound is accepted |
+| `StaleFrameAcrossTickWraparoundIsDropped` | the timeout still fires when the gap spans the wraparound |
 
-The tests are written in C++ to use GoogleTest; the protocol implementation remains C and
-is linked into the test binary unmodified.
+**Ring buffer** — `ring_buffer_tests`, 6 cases:
+
+| Test | Verifies |
+|---|---|
+| `EmptyAfterInit` | a new buffer is empty and reports nothing to read |
+| `SingleByteRoundTrip` | one byte written is read back |
+| `FifoOrder` | bytes are read in the order written |
+| `FullRejectsAndCountsLost` | the buffer accepts exactly 255 bytes; further writes fail and increment `lost` |
+| `WrapAround` | indices wrap past the end of the storage without data loss |
+| `ConsumerOnEmptyKeepsState` | reading an empty buffer fails and leaves the indices unchanged |
+
+The tests are written in C++ to use GoogleTest; the modules under test remain C and are
+linked into the test binaries unmodified.
+
+### Mutation testing
+
+To check that the tests detect faults rather than merely pass, small deliberate defects
+(mutants) were introduced into the code under test, one at a time, with the test that
+should fail predicted in advance:
+
+| Module | Mutation | Result |
+|---|---|---|
+| ring buffer | index mask `0xFF` → `0x7F` | killed by `FullRejectsAndCountsLost` |
+| decoder timeout | `>` → `>=` | killed by `GapExactlyAtTimeoutKeepsFrame` only |
+| decoder timeout | wraparound-safe `(uint32_t)(now - last) > T` → naive `now > last + T` | killed by `NormalGapAcrossTickWraparoundKeepsFrame` only |
+| decoder timeout | state reset on timeout removed | killed by both `Stale…` tests only |
+| decoder | each of the six `state = ST_SYNC1` resets removed in turn | 3 killed; 1 equivalent (unreachable `default` branch); **2 survived** |
+
+Every killed mutant was killed by exactly the predicted test. The two surviving mutants
+expose gaps in the original decoder tests: no test sends `AA` followed by noise and then a
+valid frame (reset in `SYNC2`), and the `BAD_LEN` tests do not check that the frame after
+the rejected one is accepted (reset in `LENGTH`). Tests closing both gaps are tracked in
+[#17](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/17).
 
 ### Link verification
 
@@ -330,6 +418,60 @@ interprets as editing commands rather than data.
 
 A 68-byte frame takes 567 ms on the wire at 1200 baud (10 bits per byte), so the
 harness must wait at least that long after the line terminator before reading the result.
+
+### Batch input and long runs
+
+Before each run the configured rate was confirmed by the transmitter latency (see
+[Link speed](#link-speed)): 6 characters → 86 ms measured against 83 ms calculated.
+Messages were written to the transmitter port as a single USB transfer and counted on the
+receiver port.
+
+| Run (1200 baud, optical path) | Delivered | USART errors |
+|---|---|---|
+| 6 lines in one transfer, before the ring buffer | 3 / 6 | — |
+| 6 lines in one transfer, with the ring buffer | 6 / 6 | — |
+| 3 × 60 lines in one transfer each | 180 / 180, 3.63 s per series (3.5 s calculated) | — |
+| 64-character line / 65-character line | 64 bytes / 64 bytes and BEL on the 65th | — |
+| 8 × 60 + 2 lines, inter-byte timeout firmware | 481 / 482 | FE 0, ORE 0, queue `lost` 0 |
+
+In the last run the single missing message was discarded by the decoder (the queue index
+matches 481 delivered frames and nothing was dropped on a full queue); whether it was a
+checksum or a length failure cannot be told without decoder counters
+([#11](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/11)).
+
+Across the same run the noise flag (NE) was set on about 77 % of received bytes while the
+data was correct: the USART samples each bit three times and takes the majority, and NE
+reports that the samples disagreed. This points to slow or noisy edges at PA10 and gives a
+numeric measure of link margin for alignment and component changes
+([#13](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/13)).
+
+### Fault injection
+
+To force receiver overruns, a temporary block in the receiver main loop disabled
+interrupts for about 25 ms (three byte times) after each printed message. With this fault
+in place:
+
+- every injected stall produced exactly one counted overrun (ORE = number of printed
+  messages), and reception continued afterwards. The USART registers confirmed that
+  reception stayed armed (`RXNEIE` = 1, `RxState` = `BUSY_RX`);
+- inside a continuous series only 3 of 20 messages arrived. Reading the decoder state over
+  SWD showed the cause: after a lost byte the ASCII character `'2'` (`0x32` = 50) was taken
+  as `LEN`, and the decoder consumed the next 50 bytes — about seven back-to-back frames —
+  as payload before failing the checksum. A prediction of which later messages would be
+  lost and which would arrive matched the observed output exactly;
+- with the inter-byte timeout, a message sent after a pause in the series is delivered
+  immediately; before the timeout it was swallowed by the stalled partial frame.
+
+The timeout does not help inside a continuous series, where frames follow each other
+within milliseconds. Re-scanning the swallowed bytes for a preamble after a checksum
+failure is tracked in [#16](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/16).
+
+### Ring buffer overflow
+
+Writing a line of 300 characters immediately after a short line, in one transfer, fills
+the transmitter ring buffer while the first frame is on the wire. The overflow drops the
+line terminator together with the excess bytes, so the next line is merged with the
+overflowing one ([#15](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/15)).
 
 ### Link speed
 
@@ -397,14 +539,23 @@ Build outputs are not committed; prebuilt images are available as CI artifacts.
 
 Implemented and verified on hardware:
 
-- Framing layer with unit tests; byte transparency confirmed on the optical link.
+- Framing layer with an inter-byte timeout; byte transparency confirmed on the optical
+  link.
+- Host unit tests for the framing layer and the ring buffer (20 cases), checked by
+  mutation testing.
 - Reproducible firmware builds from a hand-maintained CMake configuration, locally and in
   CI.
-- Transmitter: USB CDC line console with echo, editing, input-length enforcement and
-  framed transmission.
+- Transmitter: USB CDC line console with echo, editing and input-length enforcement;
+  every received USB byte goes through a ring buffer, so pasted multi-line input is
+  framed completely.
 - Receiver: interrupt-driven reception, incremental decoding, an 8-slot message queue
-  between the interrupt and the main loop, output of verified frames to the host.
-- End-to-end link operation at 1200 baud.
+  between the interrupt and the main loop, USART error counters, output of verified
+  frames to the host.
+- End-to-end link operation at 1200 baud: 481 of 482 messages in a continuous run.
+
+Open defects and planned work are tracked as
+[GitHub issues](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues), recorded as
+incident reports with separate severity and priority.
 
 ---
 
@@ -412,39 +563,48 @@ Implemented and verified on hardware:
 
 | Area | Description |
 |---|---|
-| USB input | The CDC receive callback forwards only the first byte of each USB packet, through a single shared byte; additional bytes in the same packet, or bytes arriving before the main loop reads the previous one, are dropped. Pasted input is therefore incomplete. |
-| Shared state | The byte handed from the USB callback to the main loop is not declared `volatile`. |
-| Blocking transmission | The transmitter sends each frame with a blocking `HAL_UART_Transmit` — up to 567 ms at 1200 baud — during which USB input is not consumed, which aggravates the input loss above. |
-| Receiver error recovery | No `HAL_UART_ErrorCallback` is provided. After a USART overrun the HAL aborts reception and nothing restarts it; the receiver stays silent until reset. Identified by code review, not yet reproduced. Framing and noise errors do not stop reception, but are not counted. |
-| Error reporting | Frames rejected with `BAD_CRC` or `BAD_LEN` are discarded without being counted. Messages dropped on a full receiver queue are counted in `lost_counter`, but the counter is not yet reported to the host. |
-| Frame timeout | The decoder has no inter-byte timeout: after a truncated frame it keeps collecting payload bytes, so the next frame is consumed as the remainder of the broken one (see `RecoverAfterBadFrame`). |
-| Link speed | The optical path does not operate above 1200 baud: at 2400 and 9600 baud no frame is received, while the same firmware passes all tests at 9600 baud over a direct wire. The limitation is attributed to the laser module; see [Link speed](#link-speed). |
+| Corrupted length | A damaged `LEN` byte makes the decoder collect up to 64 following bytes as payload before the checksum fails. Inside a continuous series this swallows several valid frames; the inter-byte timeout only helps when a pause follows. See [Fault injection](#fault-injection) and [#16](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/16). |
+| Error reporting | Frames rejected with `BAD_CRC` or `BAD_LEN`, and partial frames dropped by the timeout, are not counted ([#11](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/11)). The USART error counters and the queue `lost_counter` exist but are not yet reported to the host; they are read over SWD. |
+| Input overflow | Input beyond the 255-byte transmitter ring buffer is dropped while a frame is being sent. A dropped line terminator merges two lines ([#15](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/15)). |
+| Message length | A line longer than 64 characters is truncated to 64; there is no segmentation into several frames ([#7](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/7)). |
+| Interrupt priority | On the receiver, USART1 and USB OTG FS share priority 0, so a long USB interrupt can delay byte reception ([#14](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/14)). |
+| Link speed | The optical path does not operate above 1200 baud: at 2400 and 9600 baud no frame is received, while the same firmware passes all tests at 9600 baud over a direct wire. The limitation is attributed to the laser module; see [Link speed](#link-speed) and [#13](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/13). |
 | Integrity check | A single-byte XOR detects all single-bit errors but misses an even number of errors in the same bit position. |
-| Clocking | SYSCLK runs from HSI at 16 MHz rather than from the PLL. The PLL is configured with its P output at 120 MHz, above the STM32F411 limit of 100 MHz; it is harmless while unused as SYSCLK, but must be reconfigured before switching. |
-| USB output | The return value of `CDC_Transmit_FS` is not checked. Consecutive writes are separated by fixed `HAL_Delay()` calls; a write issued while the previous transfer is still in progress returns `USBD_BUSY` and its data is lost silently. |
+| Clocking | SYSCLK runs from HSI at 16 MHz rather than from the PLL. The PLL is configured with its P output at 120 MHz, above the STM32F411 limit of 100 MHz; it is harmless while unused as SYSCLK, but must be reconfigured before switching ([#12](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/12)). |
+| USB output | The return value of `CDC_Transmit_FS` is not checked. A write issued while the previous transfer is still in progress returns `USBD_BUSY` and its data is lost silently: echoing 64 pasted characters returned 58. The echo also passes the address of a reused local variable to an asynchronous transfer ([#9](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/9)). |
 
 ---
 
 ## Roadmap
 
-1. Optical path above 1200 baud: edge-level measurement of the laser module response,
-   then a faster emitter or a dedicated laser drive stage. Ring-buffered USB reception on
-   the transmitter that consumes every byte of each packet.
-2. USART error recovery (`HAL_UART_ErrorCallback`) with overrun, framing and noise error
-   counters.
-3. Link-quality counters — rejected frames, dropped messages, USART errors — reported to
-   the host as a basis for error-rate measurement.
-4. USB output that waits for the previous transfer instead of fixed delays.
-5. Inter-byte timeout in the decoder, so a truncated frame does not consume the next one.
-6. The link test harness committed as `tools/link_test.py`.
+1. Decoder counters for checksum, length and timeout failures, and reporting of all link
+   counters to the receiver host
+   ([#11](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/11)).
+2. Tests for the two surviving decoder mutants
+   ([#17](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/17)).
+3. The link test harness committed as `tools/link_test.py`: rate check by transmitter
+   latency, message series, delivered/lost report.
+4. Resynchronisation after a checksum failure by re-scanning the consumed bytes for a
+   preamble ([#16](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/16)).
+5. USB output that checks `CDC_Transmit_FS` and waits for the previous transfer instead of
+   fixed delays ([#9](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/9)).
+6. Discarding the current line when the transmitter ring buffer overflows
+   ([#15](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/15)).
 7. CRC-8 (table-driven) in place of the XOR checksum, with standard check values in the
    test suite.
-8. SYSCLK from the PLL at 96 MHz (M = 25, N = 192, P = 2, Q = 4; 3 flash wait states;
+8. USART1 interrupt priority above USB on the receiver
+   ([#14](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/14)).
+9. SYSCLK from the PLL at 96 MHz (M = 25, N = 192, P = 2, Q = 4; 3 flash wait states;
    APB1 at 48 MHz). APB2 must also be divided: at 96 MHz the USART1 baud-rate divisor for
-   1200 baud (5000) exceeds the 12-bit mantissa of `BRR`.
-9. Segmentation for messages longer than one frame: sequence numbers, an end-of-message
-   flag, acknowledgement and retransmission — a prerequisite for file transfer.
-10. Host tests on both Linux and macOS runners in CI.
+   1200 baud (5000) exceeds the 12-bit mantissa of `BRR`
+   ([#12](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/12)).
+10. Optical path above 1200 baud: edge-level measurement of the laser module response,
+    using the NE rate as a margin metric, then a faster emitter or a dedicated laser drive
+    stage ([#13](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/13)).
+11. Segmentation for messages longer than one frame: sequence numbers, an end-of-message
+    flag, acknowledgement and retransmission — a prerequisite for file transfer
+    ([#7](https://github.com/bar4nka-pro/stm32-fso-laser-link/issues/7)).
+12. Host tests on both Linux and macOS runners in CI.
 
 ---
 
